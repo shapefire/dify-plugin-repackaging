@@ -151,17 +151,17 @@ repackage(){
 		echo "⚠ Warning: No pyproject.toml or requirements.txt found"
 	fi
 
-	# Inject [tool.uv] config into pyproject.toml (runtime will use local wheels offline)
-	inject_uv_into_pyproject() {
+	# Inject [tool.uv] offline config into pyproject.toml (runtime uses local wheels only)
+	inject_uv_offline_into_pyproject() {
 		local PYFILE="$1"
 		[ -f "$PYFILE" ] || return 0
 	awk '
 		BEGIN { in_uv=0; saw_uv=0; saw_no=0; saw_find=0; saw_pre=0 }
-		function print_missing(){ if (!saw_no) print "no-index = true"; if (!saw_find) print "find-links = [\"./wheels\"]"; if (!saw_pre) print "prerelease = \"allow\"" }
+		function print_missing(){ if (!saw_no) print "no-index = true"; if (!saw_find) print "find-links = [\"./wheels/\"]"; if (!saw_pre) print "prerelease = \"allow\"" }
 		/^[ \t]*\[tool\.uv\][ \t]*$/ { saw_uv=1; in_uv=1; saw_no=0; saw_find=0; saw_pre=0; print; next }
 		{ if (in_uv && $0 ~ /^[ \t]*\[/) { print_missing(); in_uv=0 } }
 		{ if (in_uv && $0 ~ /^[ \t]*no-index[ \t]*=/) { print "no-index = true"; saw_no=1; next } }
-		{ if (in_uv && $0 ~ /^[ \t]*find-links[ \t]*=/) { print "find-links = [\"./wheels\"]"; saw_find=1; next } }
+		{ if (in_uv && $0 ~ /^[ \t]*find-links[ \t]*=/) { print "find-links = [\"./wheels/\"]"; saw_find=1; next } }
 		{ if (in_uv && $0 ~ /^[ \t]*prerelease[ \t]*=/) { print "prerelease = \"allow\""; saw_pre=1; next } }
 		{ print }
 		END {
@@ -170,12 +170,38 @@ repackage(){
 				print ""
 				print "[tool.uv]"
 				print "no-index = true"
-				print "find-links = [\"./wheels\"]"
+				print "find-links = [\"./wheels/\"]"
 				print "prerelease = \"allow\""
 			}
 		}
 		' "$PYFILE" > "$PYFILE.tmp" && mv "$PYFILE.tmp" "$PYFILE"
-		echo "Injected [tool.uv] into $PYFILE"
+		echo "Injected offline [tool.uv] into $PYFILE"
+	}
+
+	strip_dependency_groups() {
+		local PYFILE="$1"
+		[ -f "$PYFILE" ] || return 0
+		if ! grep -q '^\[dependency-groups\]' "$PYFILE"; then
+			return 0
+		fi
+		awk '
+		BEGIN { skip=0 }
+		/^\[dependency-groups\]/ { skip=1; next }
+		/^\[/ { skip=0 }
+		!skip { print }
+		' "$PYFILE" > "$PYFILE.tmp" && mv "$PYFILE.tmp" "$PYFILE"
+		echo "Removed [dependency-groups] from $PYFILE"
+	}
+
+	remove_from_ignore_files() {
+		local entry="$1"
+		for IGNORE_PATH in .difyignore .gitignore; do
+			[ -f "$IGNORE_PATH" ] || continue
+			if grep -qxF "$entry" "$IGNORE_PATH"; then
+				grep -vxF "$entry" "$IGNORE_PATH" > "${IGNORE_PATH}.tmp" && mv "${IGNORE_PATH}.tmp" "$IGNORE_PATH"
+				echo "Removed ${entry} from ${IGNORE_PATH}"
+			fi
+		done
 	}
 
 	if python3 -m pip --version &> /dev/null 2>&1; then
@@ -285,8 +311,7 @@ PY
 
 	# Inject [tool.uv] config to enable offline wheel usage
 	if [ -f "pyproject.toml" ]; then
-		echo "Found pyproject.toml, injecting [tool.uv] configuration..."
-		inject_uv_into_pyproject "pyproject.toml"
+		strip_dependency_groups "pyproject.toml"
 	fi
 
 	if [ -f "pyproject.toml" ] && [ ! -f "requirements.txt" ]; then
@@ -399,20 +424,32 @@ PY
 	echo "✓ Downloaded $WHEEL_COUNT wheel packages"
 
 	# ============================================
-	# Step 4: Update requirements.txt for offline usage
+	# Step 4: Update metadata for offline usage
 	# ============================================
 	echo ""
-	echo "Updating requirements.txt for offline installation..."
-	if [[ "linux" == "$OS_TYPE" ]]; then
-		sed -i '1i\--no-index --find-links=./wheels/' requirements.txt
-		[ -f ".difyignore" ] && IGNORE_PATH=.difyignore || IGNORE_PATH=.gitignore
-		[ -f "$IGNORE_PATH" ] && sed -i '/^wheels\//d' "${IGNORE_PATH}"
-	elif [[ "darwin" == "$OS_TYPE" ]]; then
-		sed -i ".bak" '1i\--no-index --find-links=./wheels/' requirements.txt && rm -f requirements.txt.bak
-		[ -f ".difyignore" ] && IGNORE_PATH=.difyignore || IGNORE_PATH=.gitignore
-		[ -f "$IGNORE_PATH" ] && sed -i ".bak" '/^wheels\//d' "${IGNORE_PATH}" && rm -f "${IGNORE_PATH}.bak"
+	echo "Updating plugin metadata for offline installation..."
+
+	if [ -f "pyproject.toml" ]; then
+		inject_uv_offline_into_pyproject "pyproject.toml"
+		if [ -f "uv.lock" ]; then
+			rm -f uv.lock
+			echo "Removed uv.lock (dify-plugin-daemon must re-resolve from ./wheels/ offline)"
+		fi
 	fi
-	echo "✓ requirements.txt updated for offline mode"
+
+	if [ -f "requirements.txt" ]; then
+		if ! grep -q '^--no-index' requirements.txt; then
+			if [[ "linux" == "$OS_TYPE" ]]; then
+				sed -i '1i\--no-index --find-links=./wheels/' requirements.txt
+			elif [[ "darwin" == "$OS_TYPE" ]]; then
+				sed -i ".bak" '1i\--no-index --find-links=./wheels/' requirements.txt && rm -f requirements.txt.bak
+			fi
+		fi
+	fi
+
+	remove_from_ignore_files "wheels/"
+	remove_from_ignore_files "wheels"
+	echo "✓ Plugin metadata updated for offline mode"
 
 	# ============================================
 	# Step 5: Package the plugin

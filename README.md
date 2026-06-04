@@ -131,6 +131,8 @@ When the build host matches the target platform (e.g. GitHub Actions on `ubuntu-
 
 - 在 .env 配置文件将 `NGINX_CLIENT_MAX_BODY_SIZE` 增大为 `500M`，Nginx客户端将允许上传 500M 大小以内的内容。
 
+离线插件安装说明：打包后的插件会在 `pyproject.toml` 中写入 `[tool.uv] no-index` 与 `find-links = ["./wheels/"]`，并删除 `uv.lock`，避免 Dify 运行时 `uv sync --frozen` 仍访问 PyPI。若仍遇到联网解析，可在 plugin daemon 环境变量中设置 `PLUGIN_IGNORE_UV_LOCK=true`。
+
 
 
 
