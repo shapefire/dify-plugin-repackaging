@@ -331,20 +331,67 @@ PY
 	echo "Index URL: ${PIP_MIRROR_URL}"
 	[ -n "$RAW_PLATFORM" ] && echo "Platform: ${RAW_PLATFORM}"
 
-	if [[ -n "$RAW_PLATFORM" ]]; then
-		PIP_PLATFORM="--platform ${RAW_PLATFORM} --only-binary=:all: \
-			--python-version ${PY_MAJOR}.${PY_MINOR} \
-			--implementation cp \
-			--abi cp${PY_MAJOR}${PY_MINOR}"
-	fi
-
 	mkdir -p ./wheels
 	echo "Downloading wheels to ./wheels/..."
-	${PIP_CMD} download ${PIP_PLATFORM} --prefer-binary -r requirements.txt -d ./wheels \
-		--index-url ${PIP_MIRROR_URL} --trusted-host mirrors.aliyun.com
-	if [[ $? -ne 0 ]]; then
-		echo "✗ Error: Failed to download dependencies"
-		exit 1
+
+	PIP_DOWNLOAD_ARGS=(--prefer-binary -r requirements.txt -d ./wheels
+		--index-url "${PIP_MIRROR_URL}")
+
+	case "${PIP_MIRROR_URL}" in
+		*mirrors.aliyun.com*) PIP_DOWNLOAD_ARGS+=(--trusted-host mirrors.aliyun.com) ;;
+		*pypi.org*) PIP_DOWNLOAD_ARGS+=(--trusted-host pypi.org --trusted-host files.pythonhosted.org) ;;
+	esac
+
+	run_pip_download() {
+		# PIP_CMD may be "python3 -m pip" (multi-word) or "pip"/"pip3".
+		${PIP_CMD} download "$@"
+	}
+
+	if host_matches_target_platform; then
+		echo "Host matches target platform; using native pip download"
+		run_pip_download "${PIP_DOWNLOAD_ARGS[@]}" || {
+			echo "✗ Error: Failed to download dependencies"
+			exit 1
+		}
+	elif [[ -n "$RAW_PLATFORM" ]]; then
+		PIP_PY_VERSION="${PY_MAJOR}${PY_MINOR}"
+		PIP_CROSS_ARGS=(--only-binary=:all:
+			--python-version "${PIP_PY_VERSION}"
+			--implementation cp
+			--abi "cp${PY_MAJOR}${PY_MINOR}")
+
+		MANYLINUX_ARCH="$(manylinux_arch_from_platform "${RAW_PLATFORM}")"
+		if [[ -z "${MANYLINUX_ARCH}" ]]; then
+			echo "✗ Error: Unsupported platform ${RAW_PLATFORM}"
+			exit 1
+		fi
+
+		# PyPI wheels may be tagged manylinux_2_17 or manylinux_2_28; try both.
+		DOWNLOAD_OK=0
+		for MANYLINUX_TAG in "manylinux_2_17_${MANYLINUX_ARCH}" "manylinux_2_28_${MANYLINUX_ARCH}"; do
+			echo "Downloading wheels for ${MANYLINUX_TAG}..."
+			if run_pip_download --platform "${MANYLINUX_TAG}" "${PIP_CROSS_ARGS[@]}" "${PIP_DOWNLOAD_ARGS[@]}"; then
+				DOWNLOAD_OK=1
+			else
+				echo "⚠ Some packages unavailable for ${MANYLINUX_TAG}; continuing"
+			fi
+		done
+
+		if [[ "${DOWNLOAD_OK}" -eq 0 ]]; then
+			echo "✗ Error: Failed to download dependencies for ${RAW_PLATFORM}"
+			exit 1
+		fi
+
+		echo "Verifying wheel cache covers requirements.txt..."
+		if ! run_pip_download --dry-run --no-index --find-links=./wheels -r requirements.txt >/dev/null 2>&1; then
+			echo "✗ Error: Wheel cache is incomplete for requirements.txt"
+			exit 1
+		fi
+	else
+		run_pip_download "${PIP_DOWNLOAD_ARGS[@]}" || {
+			echo "✗ Error: Failed to download dependencies"
+			exit 1
+		}
 	fi
 
 	# Count downloaded wheels
@@ -412,25 +459,34 @@ install_unzip(){
 	fi
 }
 
-# Map legacy manylinux tags to manylinux_2_28, which modern wheels (e.g. gevent 26.x) require.
-normalize_pip_platform() {
-	case "$1" in
-		manylinux_2_17_x86_64|manylinux2014_x86_64)
-			echo "manylinux_2_28_x86_64"
+# Return 0 when the current host can natively produce wheels for -p platform.
+host_matches_target_platform() {
+	[[ -z "$RAW_PLATFORM" ]] && return 1
+	case "$RAW_PLATFORM" in
+		*x86_64*|*amd64*)
+			[[ "$OS_TYPE" == "linux" && ( "$ARCH_NAME" == "x86_64" || "$ARCH_NAME" == "amd64" ) ]]
 			;;
-		manylinux_2_17_aarch64|manylinux2014_aarch64)
-			echo "manylinux_2_28_aarch64"
+		*aarch64*|*arm64*)
+			[[ "$OS_TYPE" == "linux" && ( "$ARCH_NAME" == "aarch64" || "$ARCH_NAME" == "arm64" ) ]]
 			;;
 		*)
-			echo "$1"
+			return 1
 			;;
+	esac
+}
+
+manylinux_arch_from_platform() {
+	case "$1" in
+		*aarch64*|*arm64*) echo "aarch64" ;;
+		*x86_64*|*amd64*) echo "x86_64" ;;
+		*) echo "" ;;
 	esac
 }
 
 print_usage() {
 	echo "usage: $0 [-p platform] [-s package_suffix] [-R] {market|github|local}"
 	echo "-p platform: python packages' platform. Using for crossing repacking.
-        For example: -p manylinux_2_28_x86_64 or -p manylinux_2_28_aarch64"
+        For example: -p manylinux_2_17_x86_64 or -p manylinux_2_17_aarch64"
 	echo "-s package_suffix: The suffix name of the output offline package.
         For example: -s linux-amd64 or -s linux-arm64"
 	echo "-R: allow pre-release versions during uv resolution (maps to --prerelease=allow)"
@@ -439,13 +495,7 @@ print_usage() {
 
 while getopts "p:s:R" opt; do
 	case "$opt" in
-		p)
-			REQUESTED_PLATFORM="${OPTARG}"
-			RAW_PLATFORM="$(normalize_pip_platform "${REQUESTED_PLATFORM}")"
-			if [[ "${REQUESTED_PLATFORM}" != "${RAW_PLATFORM}" ]]; then
-				echo "Platform ${REQUESTED_PLATFORM} mapped to ${RAW_PLATFORM} (required by modern PyPI wheels)"
-			fi
-			;;
+		p) RAW_PLATFORM="${OPTARG}" ;;
 		s) PACKAGE_SUFFIX="${OPTARG}" ;;
 		R) PRERELEASE_ALLOW=1 ;;
 		*) print_usage; exit 1 ;;

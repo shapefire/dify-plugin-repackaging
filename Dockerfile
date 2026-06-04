@@ -21,4 +21,4 @@ COPY . .
 RUN chmod +x plugin_repackaging.sh
 
 # 设置默认命令
-CMD ["./plugin_repackaging.sh", "-p", "manylinux_2_28_x86_64", "market", "antv", "visualization", "0.1.7"] 
+CMD ["./plugin_repackaging.sh", "-p", "manylinux_2_17_x86_64", "market", "antv", "visualization", "0.1.7"] 
