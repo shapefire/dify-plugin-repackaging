@@ -193,6 +193,149 @@ repackage(){
 		echo "Removed [dependency-groups] from $PYFILE"
 	}
 
+	inject_uv_environments() {
+		local PYFILE="$1"
+		[ -f "$PYFILE" ] || return 0
+
+		local sys_platform="linux"
+		if [[ -n "$RAW_PLATFORM" ]]; then
+			case "$RAW_PLATFORM" in
+				*darwin*|*macos*) sys_platform="darwin" ;;
+				*win*) sys_platform="win32" ;;
+				*) sys_platform="linux" ;;
+			esac
+		else
+			case "$OS_TYPE" in
+				darwin) sys_platform="darwin" ;;
+				linux) sys_platform="linux" ;;
+				*) sys_platform="win32" ;;
+			esac
+		fi
+
+		local env_line="environments = [\"sys_platform == '${sys_platform}' and python_version == '${UV_PY_VERSION}'\"]"
+		awk -v env_line="$env_line" '
+		BEGIN { in_uv=0; saw_uv=0; saw_env=0 }
+		/^[ \t]*\[tool\.uv\][ \t]*$/ { saw_uv=1; in_uv=1; print; next }
+		{
+			if (in_uv && $0 ~ /^[ \t]*\[/) {
+				if (!saw_env) print env_line
+				in_uv=0
+			}
+		}
+		{ if (in_uv && $0 ~ /^[ \t]*environments[ \t]*=/) { print env_line; saw_env=1; next } }
+		{ print }
+		END {
+			if (in_uv && !saw_env) print env_line
+			if (!saw_uv) {
+				print ""
+				print "[tool.uv]"
+				print env_line
+			}
+		}
+		' "$PYFILE" > "$PYFILE.tmp" && mv "$PYFILE.tmp" "$PYFILE"
+		echo "Injected uv environments (${sys_platform}, python ${UV_PY_VERSION}) into $PYFILE"
+	}
+
+	resolve_requirements_with_uv() {
+		if ! command -v uv &> /dev/null; then
+			echo "✗ Error: uv is required when pyproject.toml exists"
+			echo "  Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+			exit 1
+		fi
+
+		strip_dependency_groups "pyproject.toml"
+		inject_uv_environments "pyproject.toml"
+
+		echo "Generating uv.lock..."
+		uv lock -p "${UV_PY_VERSION}" ${UV_PRERELEASE_FLAG}
+		if [[ $? -ne 0 ]]; then
+			echo "✗ Error: uv lock failed"
+			exit 1
+		fi
+		echo "✓ uv.lock generated successfully"
+
+		echo "Exporting requirements.txt from uv.lock..."
+		uv export --frozen --no-hashes --no-dev -o requirements.txt -p "${UV_PY_VERSION}"
+		if [[ $? -ne 0 ]]; then
+			echo "✗ Error: uv export failed"
+			exit 1
+		fi
+		echo "✓ requirements.txt generated via uv export"
+	}
+
+	verify_offline_uv_sync() {
+		[ -f "pyproject.toml" ] || return 0
+		if ! command -v uv &> /dev/null; then
+			echo "⚠ uv not available, skipping offline verification"
+			return 0
+		fi
+		if [[ -n "$RAW_PLATFORM" ]] && ! host_matches_target_platform; then
+			echo "⚠ Skipping offline uv verification on non-target build host"
+			return 0
+		fi
+
+		echo "Verifying offline dependency resolution with uv..."
+		if uv sync --offline --no-dev --dry-run -p "${UV_PY_VERSION}"; then
+			echo "✓ Offline uv sync verification passed"
+		else
+			echo "✗ Error: Offline uv sync verification failed"
+			exit 1
+		fi
+	}
+
+	verify_wheel_platforms() {
+		[ -d "./wheels" ] || return 0
+		local expected="linux"
+		if [[ -n "$RAW_PLATFORM" ]]; then
+			case "$RAW_PLATFORM" in
+				*darwin*|*macos*) expected="macos" ;;
+				*win*) expected="win" ;;
+				*) expected="linux" ;;
+			esac
+		else
+			case "$OS_TYPE" in
+				darwin) expected="macos" ;;
+				linux) expected="linux" ;;
+				*) expected="win" ;;
+			esac
+		fi
+
+		local wrong=0
+		for whl in ./wheels/*.whl; do
+			[ -f "$whl" ] || continue
+			local name
+			name="$(basename "$whl")"
+			case "$name" in
+				*-py3-none-any.whl|*-py2.py3-none-any.whl) continue ;;
+			esac
+			case "$expected" in
+				linux)
+					if [[ "$name" != *manylinux* && "$name" != *linux_* && "$name" != *musllinux* ]]; then
+						echo "⚠ Unexpected wheel for Linux offline package: $name"
+						wrong=1
+					fi
+					;;
+				macos)
+					if [[ "$name" != *macosx* && "$name" != *darwin* ]]; then
+						echo "⚠ Unexpected wheel for macOS offline package: $name"
+						wrong=1
+					fi
+					;;
+				win)
+					if [[ "$name" != *win_* ]]; then
+						echo "⚠ Unexpected wheel for Windows offline package: $name"
+						wrong=1
+					fi
+					;;
+			esac
+		done
+
+		if [[ "$wrong" -ne 0 ]]; then
+			echo "✗ Error: wheels/ contains packages for the wrong platform"
+			exit 1
+		fi
+	}
+
 	remove_from_ignore_files() {
 		local entry="$1"
 		for IGNORE_PATH in .difyignore .gitignore; do
@@ -293,7 +436,7 @@ PY
 	# Set prerelease flag
 	UV_PRERELEASE_FLAG=""
 	if [[ "$PRERELEASE_ALLOW" -eq 1 ]]; then
-		UV_PRERELEASE_FLAG="--prerelease=allow"
+		UV_PRERELEASE_FLAG="--prerelease allow"
 		echo "Prerelease versions: allowed"
 	else
 		echo "Prerelease versions: disallowed"
@@ -311,37 +454,12 @@ PY
 
 	# Inject [tool.uv] config to enable offline wheel usage
 	if [ -f "pyproject.toml" ]; then
-		strip_dependency_groups "pyproject.toml"
-	fi
-
-	if [ -f "pyproject.toml" ] && [ ! -f "requirements.txt" ]; then
-		if command -v uv &> /dev/null; then
-			echo "Generating uv.lock file..."
-			uv lock ${UV_PLATFORM:+--python-platform ${UV_PLATFORM}} \
-				--python-version "${UV_PY_VERSION}" ${UV_PRERELEASE_FLAG}
-			if [[ $? -ne 0 ]]; then
-				echo "✗ Error: uv lock failed"
-				exit 1
-			fi
-			echo "✓ uv.lock generated successfully"
-
-			echo "Exporting requirements.txt from uv.lock..."
-			uv export --format requirements-txt -o requirements.txt \
-				${UV_PLATFORM:+--python-platform ${UV_PLATFORM}} \
-				--python-version "${UV_PY_VERSION}" ${UV_PRERELEASE_FLAG}
-			if [[ $? -ne 0 ]]; then
-				echo "✗ Error: uv export failed"
-				exit 1
-			fi
-			echo "✓ requirements.txt generated successfully"
-		else
-			echo "✗ Error: pyproject.toml found but uv is not installed"
-			echo "  Please install uv: pip install uv"
-			echo "  Or commit requirements.txt with the plugin"
-			exit 1
-		fi
+		resolve_requirements_with_uv
 	elif [ -f "requirements.txt" ]; then
 		echo "✓ Using existing requirements.txt"
+	else
+		echo "✗ Error: pyproject.toml or requirements.txt not found"
+		exit 1
 	fi
 
 	[ ! -f "requirements.txt" ] && echo "✗ Error: requirements.txt not found" && exit 1
@@ -422,6 +540,7 @@ PY
 	# Count downloaded wheels
 	WHEEL_COUNT=$(ls -1 ./wheels/*.whl 2>/dev/null | wc -l)
 	echo "✓ Downloaded $WHEEL_COUNT wheel packages"
+	verify_wheel_platforms
 
 	# ============================================
 	# Step 4: Update metadata for offline usage
@@ -449,6 +568,7 @@ PY
 
 	remove_from_ignore_files "wheels/"
 	remove_from_ignore_files "wheels"
+	verify_offline_uv_sync
 	echo "✓ Plugin metadata updated for offline mode"
 
 	# ============================================

@@ -115,6 +115,8 @@ and `manylinux_2_17_aarch64` for `aarch64/arm64`.
 
 When the build host matches the target platform (e.g. GitHub Actions on `ubuntu-latest` for x86_64), the script uses native `pip download` automatically.
 
+**Important:** Build offline packages on the same CPU architecture as your Dify server (amd64 vs arm64). For ARM servers, enable `platform_arm=true` in GitHub Actions.
+
 ### Update Dify platform env  Dify平台放开限制
 
 - your .env configuration file: Change `FORCE_VERIFYING_SIGNATURE` to `false` , the Dify platform will allow the installation of all plugins that are not listed in the Dify Marketplace.

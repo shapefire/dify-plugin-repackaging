@@ -9,7 +9,8 @@ RUN echo "deb https://mirrors.ustc.edu.cn/debian/ bookworm main contrib non-free
 # 安装必要的工具
 RUN apt-get update && \
     apt-get install -y curl unzip && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir uv
 
 # 设置工作目录
 WORKDIR /app
