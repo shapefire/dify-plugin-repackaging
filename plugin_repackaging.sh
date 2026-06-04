@@ -329,7 +329,14 @@ PY
 	echo "Step 3: Downloading dependencies"
 	echo "=========================================="
 	echo "Index URL: ${PIP_MIRROR_URL}"
-	[ -n "$PIP_PLATFORM" ] && echo "Platform: ${RAW_PLATFORM}"
+	[ -n "$RAW_PLATFORM" ] && echo "Platform: ${RAW_PLATFORM}"
+
+	if [[ -n "$RAW_PLATFORM" ]]; then
+		PIP_PLATFORM="--platform ${RAW_PLATFORM} --only-binary=:all: \
+			--python-version ${PY_MAJOR}.${PY_MINOR} \
+			--implementation cp \
+			--abi cp${PY_MAJOR}${PY_MINOR}"
+	fi
 
 	mkdir -p ./wheels
 	echo "Downloading wheels to ./wheels/..."
@@ -405,10 +412,25 @@ install_unzip(){
 	fi
 }
 
+# Map legacy manylinux tags to manylinux_2_28, which modern wheels (e.g. gevent 26.x) require.
+normalize_pip_platform() {
+	case "$1" in
+		manylinux_2_17_x86_64|manylinux2014_x86_64)
+			echo "manylinux_2_28_x86_64"
+			;;
+		manylinux_2_17_aarch64|manylinux2014_aarch64)
+			echo "manylinux_2_28_aarch64"
+			;;
+		*)
+			echo "$1"
+			;;
+	esac
+}
+
 print_usage() {
 	echo "usage: $0 [-p platform] [-s package_suffix] [-R] {market|github|local}"
 	echo "-p platform: python packages' platform. Using for crossing repacking.
-        For example: -p manylinux2014_x86_64 or -p manylinux2014_aarch64"
+        For example: -p manylinux_2_28_x86_64 or -p manylinux_2_28_aarch64"
 	echo "-s package_suffix: The suffix name of the output offline package.
         For example: -s linux-amd64 or -s linux-arm64"
 	echo "-R: allow pre-release versions during uv resolution (maps to --prerelease=allow)"
@@ -417,7 +439,13 @@ print_usage() {
 
 while getopts "p:s:R" opt; do
 	case "$opt" in
-		p) RAW_PLATFORM="${OPTARG}"; PIP_PLATFORM="--platform ${OPTARG} --only-binary=:all:" ;;
+		p)
+			REQUESTED_PLATFORM="${OPTARG}"
+			RAW_PLATFORM="$(normalize_pip_platform "${REQUESTED_PLATFORM}")"
+			if [[ "${REQUESTED_PLATFORM}" != "${RAW_PLATFORM}" ]]; then
+				echo "Platform ${REQUESTED_PLATFORM} mapped to ${RAW_PLATFORM} (required by modern PyPI wheels)"
+			fi
+			;;
 		s) PACKAGE_SUFFIX="${OPTARG}" ;;
 		R) PRERELEASE_ALLOW=1 ;;
 		*) print_usage; exit 1 ;;

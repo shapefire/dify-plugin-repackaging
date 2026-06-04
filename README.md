@@ -14,7 +14,7 @@
 1.change param in dockerfile
 
 ```dockerfile
-CMD ["./plugin_repackaging.sh", "-p", "manylinux_2_17_x86_64", "market", "antv", "visualization", "0.1.7"] 
+CMD ["./plugin_repackaging.sh", "-p", "manylinux_2_28_x86_64", "market", "antv", "visualization", "0.1.7"] 
 ```
 
 2.build
@@ -37,7 +37,7 @@ docker run -v %cd%:/app dify-plugin-repackaging
 
 linux
 ```bash
-docker run -v $(pwd):/app dify-plugin-repackaging ./plugin_repackaging.sh -p manylinux_2_17_x86_64 market antv visualization 0.1.7
+docker run -v $(pwd):/app dify-plugin-repackaging ./plugin_repackaging.sh -p manylinux_2_28_x86_64 market antv visualization 0.1.7
 ```
 
 ### Prerequisites
@@ -110,8 +110,10 @@ git clone https://github.com/junjiem/dify-plugin-repackaging.git
 For repacking the plugins in different platforms between operating and running environment, 
 please using `-p` option with a pip platform string.
 
-Typically, uses `manylinux2014_x86_64` for plugins running on an `x86_64/amd64` OS, 
-and `manylinux2014_aarch64` for `aarch64/arm64`.
+Typically, uses `manylinux_2_28_x86_64` for plugins running on an `x86_64/amd64` OS, 
+and `manylinux_2_28_aarch64` for `aarch64/arm64`.
+
+Legacy tags such as `manylinux_2_17_x86_64` and `manylinux2014_x86_64` are automatically mapped to `manylinux_2_28_*`.
 
 ### Update Dify platform env  Dify平台放开限制
 
