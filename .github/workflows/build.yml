@@ -48,10 +48,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Upgrade pip/setuptools/wheel
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip --version
 
       - name: Make plugin_repackaging.sh executable
         run: chmod +x ./plugin_repackaging.sh
