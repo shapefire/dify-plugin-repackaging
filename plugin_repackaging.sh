@@ -477,23 +477,29 @@ PY
 	mkdir -p ./wheels
 	echo "Downloading wheels to ./wheels/..."
 
-	PIP_DOWNLOAD_ARGS=(--prefer-binary -r requirements.txt -d ./wheels
+	PIP_WHEEL_ARGS=(--prefer-binary -r requirements.txt -w ./wheels
 		--index-url "${PIP_MIRROR_URL}")
 
 	case "${PIP_MIRROR_URL}" in
-		*mirrors.aliyun.com*) PIP_DOWNLOAD_ARGS+=(--trusted-host mirrors.aliyun.com) ;;
-		*pypi.org*) PIP_DOWNLOAD_ARGS+=(--trusted-host pypi.org --trusted-host files.pythonhosted.org) ;;
+		*mirrors.aliyun.com*) PIP_WHEEL_ARGS+=(--trusted-host mirrors.aliyun.com) ;;
+		*pypi.org*) PIP_WHEEL_ARGS+=(--trusted-host pypi.org --trusted-host files.pythonhosted.org) ;;
 	esac
 
+	run_pip_wheel() {
+		${PIP_CMD} wheel "$@"
+	}
+
 	run_pip_download() {
-		# PIP_CMD may be "python3 -m pip" (multi-word) or "pip"/"pip3".
 		${PIP_CMD} download "$@"
 	}
 
 	if host_matches_target_platform; then
-		echo "Host matches target platform; using native pip download"
-		run_pip_download "${PIP_DOWNLOAD_ARGS[@]}" || {
-			echo "✗ Error: Failed to download dependencies"
+		echo "Host matches target platform; using pip wheel (builds sdists when needed)"
+		run_pip_wheel "${PIP_WHEEL_ARGS[@]}" || {
+			echo "✗ Error: Failed to build/download dependency wheels"
+			echo "  Some packages (e.g. pycairo) have no Linux wheels and must be compiled."
+			echo "  Install native build deps first, e.g.:"
+			echo "    sudo apt-get install -y libcairo2-dev pkg-config gcc g++ python3-dev"
 			exit 1
 		}
 	elif [[ -n "$RAW_PLATFORM" ]]; then
@@ -513,7 +519,10 @@ PY
 		DOWNLOAD_OK=0
 		for MANYLINUX_TAG in "manylinux_2_17_${MANYLINUX_ARCH}" "manylinux_2_28_${MANYLINUX_ARCH}"; do
 			echo "Downloading wheels for ${MANYLINUX_TAG}..."
-			if run_pip_download --platform "${MANYLINUX_TAG}" "${PIP_CROSS_ARGS[@]}" "${PIP_DOWNLOAD_ARGS[@]}"; then
+			if run_pip_download --platform "${MANYLINUX_TAG}" "${PIP_CROSS_ARGS[@]}" \
+				--prefer-binary -r requirements.txt -d ./wheels \
+				--index-url "${PIP_MIRROR_URL}" \
+				$(case "${PIP_MIRROR_URL}" in *mirrors.aliyun.com*) echo --trusted-host mirrors.aliyun.com ;; *pypi.org*) echo --trusted-host pypi.org --trusted-host files.pythonhosted.org ;; esac); then
 				DOWNLOAD_OK=1
 			else
 				echo "⚠ Some packages unavailable for ${MANYLINUX_TAG}; continuing"
@@ -531,8 +540,8 @@ PY
 			exit 1
 		fi
 	else
-		run_pip_download "${PIP_DOWNLOAD_ARGS[@]}" || {
-			echo "✗ Error: Failed to download dependencies"
+		run_pip_wheel "${PIP_WHEEL_ARGS[@]}" || {
+			echo "✗ Error: Failed to build/download dependency wheels"
 			exit 1
 		}
 	fi

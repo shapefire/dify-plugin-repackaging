@@ -117,6 +117,8 @@ When the build host matches the target platform (e.g. GitHub Actions on `ubuntu-
 
 **Important:** Build offline packages on the same CPU architecture as your Dify server (amd64 vs arm64). For ARM servers, enable `platform_arm=true` in GitHub Actions.
 
+Some plugins (e.g. with `xhtml2pdf`) depend on `pycairo`, which has no pre-built Linux wheels. The build environment must provide native libraries such as `libcairo2-dev` (included in the GitHub workflow and Dockerfile).
+
 ### Update Dify platform env  Dify平台放开限制
 
 - your .env configuration file: Change `FORCE_VERIFYING_SIGNATURE` to `false` , the Dify platform will allow the installation of all plugins that are not listed in the Dify Marketplace.

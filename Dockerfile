@@ -8,7 +8,7 @@ RUN echo "deb https://mirrors.ustc.edu.cn/debian/ bookworm main contrib non-free
 
 # 安装必要的工具
 RUN apt-get update && \
-    apt-get install -y curl unzip && \
+    apt-get install -y curl unzip libcairo2-dev pkg-config gcc g++ python3-dev && \
     rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir uv
 
